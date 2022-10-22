@@ -1,0 +1,5 @@
+conda activate SG3
+d:
+cd D:\DEV\Repos\Python\stylegan3
+
+python gen_images_imgint.py --seeds 1-4 --outdir "D:\ProjectsOffline\MoMA\RandomSampleTest" --network "D:\GoogleDrive\ImaginaryFriends\Projects\RAS_2022_08_MOMA\02_ProjectFiles\Assets\GAN_Models\moma1k.pkl" 

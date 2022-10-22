@@ -17,8 +17,34 @@ import dnnlib
 import numpy as np
 import PIL.Image
 import torch
+from imageio import imwrite
 
 import legacy
+
+def w_to_img(G, dlatents: Union[List[torch.Tensor], torch.Tensor], noise_mode: str = 'const') -> np.ndarray:
+    """
+    Get an image/np.ndarray from a dlatent W using G and the selected noise_mode. The final shape of the
+    returned image will be [len(dlatents), G.img_resolution, G.img_resolution, G.img_channels].
+        Note: this function should be used after doing the truncation trick!
+    """
+    assert isinstance(dlatents, torch.Tensor), f'dlatents should be a torch.Tensor!: "{type(dlatents)}"'
+    if len(dlatents.shape) == 2:
+        dlatents = dlatents.unsqueeze(0)  # An individual dlatent => [1, G.mapping.num_ws, G.mapping.w_dim]
+    synth_image = G.synthesis(dlatents, noise_mode=noise_mode)
+    synth_image = (synth_image + 1) * 255/2  # [-1.0, 1.0] -> [0.0, 255.0]
+    synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8).cpu().numpy()  # NCWH => NWHC
+    return synth_image
+
+
+def z_to_dlatent(G, latents: torch.Tensor, label: torch.Tensor, truncation_psi: float = 1.0) -> torch.Tensor:
+    """Get the dlatent from the given latent, class label and truncation psi"""
+    assert isinstance(latents, torch.Tensor), f'latents should be a torch.Tensor!: "{type(latents)}"'
+    assert isinstance(label, torch.Tensor), f'label should be a torch.Tensor!: "{type(label)}"'
+    if len(latents.shape) == 1:
+        latents = latents.unsqueeze(0)  # An individual latent => [1, G.z_dim]
+    dlatents = G.mapping(z=latents, c=label, truncation_psi=truncation_psi)
+
+    return dlatents
 
 #----------------------------------------------------------------------------
 
@@ -77,6 +103,7 @@ def make_transform(translate: Tuple[float,float], angle: float):
 @click.option('--translate', help='Translate XY-coordinate (e.g. \'0.3,1\')', type=parse_vec2, default='0,0', show_default=True, metavar='VEC2')
 @click.option('--rotate', help='Rotation angle in degrees', type=float, default=0, show_default=True, metavar='ANGLE')
 @click.option('--outdir', help='Where to save the output images', type=str, required=True, metavar='DIR')
+#@click.option("--gr", is_flag=True, show_default=True, default=False, help="Greet the world.")
 def generate_images(
     network_pkl: str,
     seeds: List[int],
@@ -101,6 +128,8 @@ def generate_images(
     python gen_images.py --outdir=out --trunc=0.7 --seeds=600-605 \\
         --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-t-metfacesu-1024x1024.pkl
     """
+    # TODO add to args
+    thumbSize = 128
 
     print('Loading networks from "%s"...' % network_pkl)
     device = torch.device('cuda')
@@ -108,6 +137,10 @@ def generate_images(
         G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
 
     os.makedirs(outdir, exist_ok=True)
+    imageDir = os.path.join(outdir, 'images')
+    os.makedirs(imageDir, exist_ok=True)
+    thumbDir = os.path.join(outdir, 'thumbs')
+    os.makedirs(thumbDir, exist_ok=True)
 
     # Labels.
     label = torch.zeros([1, G.c_dim], device=device)
@@ -119,11 +152,14 @@ def generate_images(
         if class_idx is not None:
             print ('warn: --class=lbl ignored when running on an unconditional network')
 
+    #w_output = np.ndarray(shape=(len(seeds), 512), dtype=np.float32)
+    all_w = torch.zeros([len(seeds), 512], device=device)
+    
     # Generate images.
     for seed_idx, seed in enumerate(seeds):
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
-
+        #w = G.mapping(z, label)
         # Construct an inverse rotation/translation matrix and pass to the generator.  The
         # generator expects this matrix as an inverse to avoid potentially failing numerical
         # operations in the network.
@@ -131,10 +167,27 @@ def generate_images(
             m = make_transform(translate, rotate)
             m = np.linalg.inv(m)
             G.synthesis.input.transform.copy_(torch.from_numpy(m))
+            G.mapping()
 
-        img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
-        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.jpg')
+        w = z_to_dlatent(G, z, label, truncation_psi=truncation_psi)
+        all_w[seed_idx, :] = w[0, 0, :] # just first slice of repeated W layers
+        img = w_to_img(G, w)
+        fullsize = PIL.Image.fromarray(img[0], 'RGB')
+        imgName =  os.path.join(imageDir,  f'{seed_idx:07}.jpg')
+        fullsize.save(imgName)
+
+        thumbName =  os.path.join(thumbDir,  f'{seed_idx:07}.jpg')
+        fullsize.thumbnail([thumbSize,thumbSize])
+        fullsize.save(thumbName)
+
+    w_output = all_w.cpu().numpy()
+    np.save(os.path.join(outdir, f'latentsW'),  w_output)  
+    imwrite(os.path.join(outdir, f'latentsW' + '.tif'),   np.squeeze(w_output)) 
+        
+
+        #img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
+        #img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        #PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
 
 
 #----------------------------------------------------------------------------

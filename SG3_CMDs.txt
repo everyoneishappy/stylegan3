@@ -1,0 +1,8 @@
+D:
+cd D:\DEV\Repos\Python\stylegan3
+conda activate SG3
+
+python gen_video.py --output=lerp.mp4 --seeds=0-512 --grid=4x2 --network=D:\GoogleDrive\ImaginaryFriends\Projects\RAS_2022_08_MOMA\02_ProjectFiles\Assets\GAN_Models\moma1k.pkl --trunc 0.75 --grid 8,2
+
+
+python gen_images_from_W_file.py --network=D:\GoogleDrive\ImaginaryFriends\Projects\RAS_2022_08_MOMA\02_ProjectFiles\Assets\GAN_Models\moma1k.pkl --outdir "D:\ProjectsOffline\MoMA\moma_cluster_outputs"

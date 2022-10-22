@@ -17,8 +17,25 @@ import dnnlib
 import numpy as np
 import PIL.Image
 import torch
+from imageio import imwrite, imread
 
 import legacy
+
+def w_to_img(G, dlatents: Union[List[torch.Tensor], torch.Tensor], noise_mode: str = 'const') -> np.ndarray:
+    """
+    Get an image/np.ndarray from a dlatent W using G and the selected noise_mode. The final shape of the
+    returned image will be [len(dlatents), G.img_resolution, G.img_resolution, G.img_channels].
+        Note: this function should be used after doing the truncation trick!
+    """
+    assert isinstance(dlatents, torch.Tensor), f'dlatents should be a torch.Tensor!: "{type(dlatents)}"'
+    if len(dlatents.shape) == 2:
+        dlatents = dlatents.unsqueeze(0)  # An individual dlatent => [1, G.mapping.num_ws, G.mapping.w_dim]
+    synth_image = G.synthesis(dlatents, noise_mode=noise_mode)
+    synth_image = (synth_image + 1) * 255/2  # [-1.0, 1.0] -> [0.0, 255.0]
+    synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8).cpu().numpy()  # NCWH => NWHC
+    return synth_image
+
+
 
 #----------------------------------------------------------------------------
 
@@ -70,16 +87,15 @@ def make_transform(translate: Tuple[float,float], angle: float):
 
 @click.command()
 @click.option('--network', 'network_pkl', help='Network pickle filename', required=True)
-@click.option('--seeds', type=parse_range, help='List of random seeds (e.g., \'0,1,4-6\')', required=True)
 @click.option('--trunc', 'truncation_psi', type=float, help='Truncation psi', default=1, show_default=True)
 @click.option('--class', 'class_idx', type=int, help='Class label (unconditional if not specified)')
 @click.option('--noise-mode', help='Noise mode', type=click.Choice(['const', 'random', 'none']), default='const', show_default=True)
 @click.option('--translate', help='Translate XY-coordinate (e.g. \'0.3,1\')', type=parse_vec2, default='0,0', show_default=True, metavar='VEC2')
 @click.option('--rotate', help='Rotation angle in degrees', type=float, default=0, show_default=True, metavar='ANGLE')
 @click.option('--outdir', help='Where to save the output images', type=str, required=True, metavar='DIR')
+#@click.option("--gr", is_flag=True, show_default=True, default=False, help="Greet the world.")
 def generate_images(
     network_pkl: str,
-    seeds: List[int],
     truncation_psi: float,
     noise_mode: str,
     outdir: str,
@@ -101,6 +117,10 @@ def generate_images(
     python gen_images.py --outdir=out --trunc=0.7 --seeds=600-605 \\
         --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-t-metfacesu-1024x1024.pkl
     """
+    # TODO add to args
+    thumbSize = 128
+    w_path =  R"D:\GoogleDrive\ImaginaryFriends\Projects\RAS_2022_08_MOMA\01_ProcessFiles\Cluster_Assets\cluster_samples_700_per_cluster.tif"
+
 
     print('Loading networks from "%s"...' % network_pkl)
     device = torch.device('cuda')
@@ -108,6 +128,10 @@ def generate_images(
         G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
 
     os.makedirs(outdir, exist_ok=True)
+    imageDir = os.path.join(outdir, 'images')
+    os.makedirs(imageDir, exist_ok=True)
+    thumbDir = os.path.join(outdir, 'thumbs')
+    os.makedirs(thumbDir, exist_ok=True)
 
     # Labels.
     label = torch.zeros([1, G.c_dim], device=device)
@@ -119,22 +143,27 @@ def generate_images(
         if class_idx is not None:
             print ('warn: --class=lbl ignored when running on an unconditional network')
 
+    all_w = imread(w_path)
+    all_w = torch.from_numpy(all_w).float().to(device)
+
+ 
+    layerCount = 18
     # Generate images.
-    for seed_idx, seed in enumerate(seeds):
-        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
-        z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
+    for latent_idx, w in enumerate(all_w):
+        print('Generating image for...', (latent_idx, len(all_w)))
+        w = w.tile((18, 1)) # think this is a fixed number for SG3??
+        w = w.unsqueeze(0)
+        img = w_to_img(G, w)
+        fullsize = PIL.Image.fromarray(img[0], 'RGB')
+        imgName =  os.path.join(imageDir,  f'{latent_idx:07}.jpg')
+        fullsize.save(imgName)
 
-        # Construct an inverse rotation/translation matrix and pass to the generator.  The
-        # generator expects this matrix as an inverse to avoid potentially failing numerical
-        # operations in the network.
-        if hasattr(G.synthesis, 'input'):
-            m = make_transform(translate, rotate)
-            m = np.linalg.inv(m)
-            G.synthesis.input.transform.copy_(torch.from_numpy(m))
+        thumbName =  os.path.join(thumbDir,  f'{latent_idx:07}.jpg')
+        fullsize.thumbnail([thumbSize,thumbSize])
+        fullsize.save(thumbName)
 
-        img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
-        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.jpg')
+
+        
 
 
 #----------------------------------------------------------------------------
