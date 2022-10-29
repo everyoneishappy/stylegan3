@@ -93,6 +93,8 @@ def make_transform(translate: Tuple[float,float], angle: float):
 @click.option('--translate', help='Translate XY-coordinate (e.g. \'0.3,1\')', type=parse_vec2, default='0,0', show_default=True, metavar='VEC2')
 @click.option('--rotate', help='Rotation angle in degrees', type=float, default=0, show_default=True, metavar='ANGLE')
 @click.option('--outdir', help='Where to save the output images', type=str, required=True, metavar='DIR')
+@click.option('--w_path', help='W Latents filename', required=True)
+@click.option('--thumbsize', 'thumb_size', type=int, help='Thumbnail resolution', default=128)
 #@click.option("--gr", is_flag=True, show_default=True, default=False, help="Greet the world.")
 def generate_images(
     network_pkl: str,
@@ -101,7 +103,9 @@ def generate_images(
     outdir: str,
     translate: Tuple[float,float],
     rotate: float,
-    class_idx: Optional[int]
+    class_idx: Optional[int],
+    w_path: str,
+    thumb_size : int
 ):
     """Generate images using pretrained network pickle.
 
@@ -117,9 +121,7 @@ def generate_images(
     python gen_images.py --outdir=out --trunc=0.7 --seeds=600-605 \\
         --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-t-metfacesu-1024x1024.pkl
     """
-    # TODO add to args
-    thumbSize = 128
-    w_path =  R"D:\GoogleDrive\ImaginaryFriends\Projects\RAS_2022_08_MOMA\01_ProcessFiles\Cluster_Assets\cluster_samples_700_per_cluster.tif"
+
 
 
     print('Loading networks from "%s"...' % network_pkl)
@@ -132,6 +134,8 @@ def generate_images(
     os.makedirs(imageDir, exist_ok=True)
     thumbDir = os.path.join(outdir, 'thumbs')
     os.makedirs(thumbDir, exist_ok=True)
+
+    print(G.num_ws)
 
     # Labels.
     label = torch.zeros([1, G.c_dim], device=device)
@@ -146,24 +150,21 @@ def generate_images(
     all_w = imread(w_path)
     all_w = torch.from_numpy(all_w).float().to(device)
 
- 
-    layerCount = 18
     # Generate images.
     for latent_idx, w in enumerate(all_w):
-        print('Generating image for...', (latent_idx, len(all_w)))
-        w = w.tile((18, 1)) # think this is a fixed number for SG3??
+        print(F'Generating image {latent_idx} of {len(all_w)}')
+        w = w.tile((G.num_ws, 1)) 
         w = w.unsqueeze(0)
-        img = w_to_img(G, w)
+        img = w_to_img(G, w, noise_mode = noise_mode)
         fullsize = PIL.Image.fromarray(img[0], 'RGB')
         imgName =  os.path.join(imageDir,  f'{latent_idx:07}.jpg')
         fullsize.save(imgName)
 
         thumbName =  os.path.join(thumbDir,  f'{latent_idx:07}.jpg')
-        fullsize.thumbnail([thumbSize,thumbSize])
+        fullsize.thumbnail([thumb_size,thumb_size])
         fullsize.save(thumbName)
 
 
-        
 
 
 #----------------------------------------------------------------------------
